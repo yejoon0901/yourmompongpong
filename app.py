@@ -4,7 +4,6 @@ import requests
 import pydeck as pdk
 import numpy as np
 import time
-import random
 
 # -----------------------------------------------------------
 # 1. 페이지 기본 설정
@@ -12,7 +11,7 @@ import random
 st.set_page_config(page_title="한반도 실시간 비행기 추적", layout="wide")
 
 st.title("✈️ 한반도 상공 실시간 비행기 이상 탐지 웹앱")
-st.write("OpenSky API 데이터(또는 가상 데이터)에 Z-score 통계 기법을 적용하여 급강하 중인 비행기를 자동으로 감지합니다.")
+st.write("OpenSky API 데이터에 Z-score 통계 기법을 적용하여 급강하 중인 비행기를 자동으로 감지합니다.")
 
 # -----------------------------------------------------------
 # 2. 사이드바 UI 설정
@@ -68,3 +67,101 @@ def get_flight_data():
         return []
         
     return []
+# -----------------------------------------------------------
+# 4. 데이터 전처리 및 이상 탐지
+# -----------------------------------------------------------
+if raw_data and len(raw_data) > 0:
+    columns = [
+        'icao24', 'callsign', 'origin_country', 'time_position', 'last_contact',
+        'longitude', 'latitude', 'baro_altitude', 'on_ground', 'velocity',
+        'true_track', 'vertical_rate', 'sensors', 'geo_altitude', 'squawk', 'spi', 'position_source'
+    ]
+    df = pd.DataFrame(raw_data, columns=columns)
+    
+    df = df[['callsign', 'longitude', 'latitude', 'baro_altitude', 'velocity', 'vertical_rate']]
+    df = df.dropna(subset=['longitude', 'latitude', 'vertical_rate'])
+    df['callsign'] = df['callsign'].astype(str).str.strip().replace('', '알 수 없음')
+
+    # Z-score 계산
+    mean_vr = df['vertical_rate'].mean()
+    std_vr = df['vertical_rate'].std()
+    
+    if std_vr > 0:
+        df['z_score'] = (df['vertical_rate'] - mean_vr) / std_vr
+    else:
+        df['z_score'] = 0.0
+
+    # 위험(급강하) 판정 로직
+    df['status'] = np.where(
+        (df['z_score'] <= z_threshold) & (df['vertical_rate'] < -10.0), 
+        '위험(급강하)', 
+        '정상'
+    )
+
+    def assign_color(status):
+        return [255, 0, 0, 255] if status == '위험(급강하)' else [255, 200, 0, 180]
+        
+    df['color'] = df['status'].apply(assign_color)
+
+    # -----------------------------------------------------------
+    # 5. 현황판 및 3D 지도 시각화
+    # -----------------------------------------------------------
+    diving_count = len(df[df['status'] == '위험(급강하)'])
+    
+    if diving_count > 0:
+        st.error(f"🚨 주의: 현재 한반도 상공에 급강하 중인 비행기가 {diving_count}대 감지되었습니다!")
+    else:
+        st.info("✅ 현재 급강하 이상 징후 없음")
+
+    view_state = pdk.ViewState(latitude=36.0, longitude=128.0, zoom=6, pitch=45)
+    
+    layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=df,
+        get_position="[longitude, latitude]",
+        get_radius=8000, 
+        get_fill_color="color",
+        pickable=True
+    )
+
+    tooltip = {
+        "html": """
+        <b>✈️ 콜사인:</b> {callsign} <br/>
+        <b>🚨 상태:</b> {status} <br/>
+        <b>📉 수직 속도:</b> {vertical_rate} m/s <br/>
+        <b>📊 Z-score:</b> {z_score} <br/>
+        <b>🏔️ 현재 고도:</b> {baro_altitude} m
+        """,
+        "style": {"backgroundColor": "#222", "color": "white"}
+    }
+
+    st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip, map_style="dark"))
+    
+    # -----------------------------------------------------------
+    # 6. 데이터 테이블
+    # -----------------------------------------------------------
+    st.markdown("---")
+    st.subheader("📊 실시간 항공 통계 데이터")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric(label="평균 수직 속도", value=f"{mean_vr:.2f} m/s")
+    with col2:
+        st.metric(label="수직 속도 표준편차", value=f"{std_vr:.2f}")
+        
+    formatted_df = df[['callsign', 'status', 'z_score', 'vertical_rate', 'baro_altitude', 'velocity']].copy()
+    
+    st.dataframe(
+        formatted_df.style.format({
+            'z_score': '{:.2f}', 
+            'vertical_rate': '{:.2f}',
+            'baro_altitude': '{:.0f}',
+            'velocity': '{:.1f}'
+        }),
+        use_container_width=True
+    )
+
+else:
+    # 데이터 수신 실패 또는 빈 데이터일 경우 처리
+    st.warning("현재 한반도 상공에서 감지된 비행기 데이터가 없거나 서버 혼잡으로 데이터를 가져오지 못했습니다.")
+    st.info("왼쪽 사이드바의 **[🔄 데이터 새로고침]** 버튼을 다시 눌러주세요.")

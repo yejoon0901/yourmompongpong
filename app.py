@@ -34,16 +34,18 @@ z_threshold = st.sidebar.slider(
 )
 
 # -----------------------------------------------------------
-# 3. 가상 데이터 생성기 (API 차단 시 무조건 화면을 띄우기 위한 장치)
+# 3. 가상 데이터 생성기 (개수 축소 & 비행 방향 추가)
 # -----------------------------------------------------------
 def get_mock_data():
     mock_states = []
-    for i in range(40):
+    # 요청하신 대로 가상 데이터 개수를 40개에서 15개로 확 줄였습니다.
+    for i in range(15):
         callsign = f"KAL{random.randint(100, 999)}"
         lon = random.uniform(125.0, 131.0)
         lat = random.uniform(34.0, 38.0)
         alt = random.uniform(3000, 10000)
         vel = random.uniform(200, 250)
+        track = random.uniform(0, 360) # 가상 비행기의 랜덤 비행 방향(각도)
         
         if random.random() > 0.9:
             vr = random.uniform(-25.0, -15.0)  # 위험
@@ -53,7 +55,7 @@ def get_mock_data():
         row = [
             "mock", callsign, "South Korea", 0, 0,
             lon, lat, alt, False, vel,
-            0, vr, None, alt, "0000", False, 0
+            track, vr, None, alt, "0000", False, 0
         ]
         mock_states.append(row)
     return mock_states
@@ -96,9 +98,18 @@ if raw_data and len(raw_data) > 0:
     ]
     df = pd.DataFrame(raw_data, columns=columns)
     
-    df = df[['callsign', 'longitude', 'latitude', 'baro_altitude', 'velocity', 'vertical_rate']]
+    # 비행기 방향(true_track) 컬럼을 추가로 가져옵니다.
+    df = df[['callsign', 'longitude', 'latitude', 'baro_altitude', 'velocity', 'vertical_rate', 'true_track']]
     df = df.dropna(subset=['longitude', 'latitude', 'vertical_rate'])
     df['callsign'] = df['callsign'].astype(str).str.strip().replace('', '알 수 없음')
+
+    # 방향 데이터 결측치 처리 (정보가 없으면 북쪽(0도)을 바라보게 함)
+    df['true_track'] = df['true_track'].fillna(0)
+    
+    # [핵심] 비행기 아이콘과 회전 각도 설정
+    # ✈ 폰트 아이콘이 기본적으로 북동쪽(45도)을 향하고 있으므로, 실제 방향에서 45도를 빼서 실제 비행 방향에 딱 맞춥니다.
+    df['angle'] = df['true_track'] - 45
+    df['icon'] = '✈'
 
     mean_vr = df['vertical_rate'].mean()
     std_vr = df['vertical_rate'].std()
@@ -120,7 +131,7 @@ if raw_data and len(raw_data) > 0:
     df['color'] = df['status'].apply(assign_color)
 
     # -----------------------------------------------------------
-    # 6. 현황판 및 3D 지도 시각화
+    # 6. 현황판 및 3D 지도 시각화 (비행기 모양으로 변경)
     # -----------------------------------------------------------
     diving_count = len(df[df['status'] == '위험(급강하)'])
     
@@ -131,12 +142,15 @@ if raw_data and len(raw_data) > 0:
 
     view_state = pdk.ViewState(latitude=36.0, longitude=128.0, zoom=6, pitch=45)
     
+    # 둥근 점(ScatterplotLayer) 대신 텍스트 레이어(TextLayer)를 활용해 비행기 모양(✈) 렌더링
     layer = pdk.Layer(
-        "ScatterplotLayer",
+        "TextLayer",
         data=df,
         get_position="[longitude, latitude]",
-        get_radius=8000, 
-        get_fill_color="color",
+        get_text="icon",         # '✈' 아이콘 불러오기
+        get_size=35,             # 비행기 크기
+        get_color="color",       # 상태별 색상 (정상:노랑, 위험:빨강)
+        get_angle="angle",       # 비행기가 날아가는 방향으로 회전
         pickable=True
     )
 
@@ -145,16 +159,17 @@ if raw_data and len(raw_data) > 0:
         <b>✈️ 콜사인:</b> {callsign} <br/>
         <b>🚨 상태:</b> {status} <br/>
         <b>📉 수직 속도:</b> {vertical_rate} m/s <br/>
+        <b>🧭 기수 방향:</b> {true_track} 도 <br/>
         <b>📊 Z-score:</b> {z_score} <br/>
         <b>🏔️ 현재 고도:</b> {baro_altitude} m
         """,
-        "style": {"backgroundColor": "#222", "color": "white"}
+        "style": {"backgroundColor": "#222", "color": "white", "borderRadius": "5px"}
     }
 
     st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip, map_style="dark"))
     
     # -----------------------------------------------------------
-    # 7. 데이터 테이블 (에러 원인 완벽 제거)
+    # 7. 데이터 테이블
     # -----------------------------------------------------------
     st.markdown("---")
     st.subheader("📊 실시간 항공 통계 데이터")
@@ -167,8 +182,6 @@ if raw_data and len(raw_data) > 0:
         
     formatted_df = df[['callsign', 'status', 'z_score', 'vertical_rate', 'baro_altitude', 'velocity']].copy()
     
-    # 에러를 일으키던 applymap/map 색상 칠하기 코드를 완전히 삭제했습니다.
-    # 숫자 소수점 포맷팅만 깔끔하게 적용합니다.
     st.dataframe(
         formatted_df.style.format({
             'z_score': '{:.2f}', 

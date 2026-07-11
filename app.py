@@ -33,40 +33,48 @@ z_threshold = st.sidebar.slider(
 )
 
 # -----------------------------------------------------------
+# 3. 데이터 수집 (가상 데이터 제거, 실제 API 재시도 로직만 적용)
 # -----------------------------------------------------------
-# 3. 데이터 수집 (빠른 응답을 위해 대기 시간 최소화)
-# -----------------------------------------------------------
-@st.cache_data(ttl=30, show_spinner="위성 통신 중...")
+@st.cache_data(ttl=30, show_spinner="데이터를 수신 중입니다...")
 def get_flight_data():
     url = "https://opensky-network.org/api/states/all"
     params = {"lamin": 33.0, "lamax": 39.0, "lomin": 124.0, "lomax": 132.0}
+    # 웹 브라우저로 위장하여 차단 확률 낮추기
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'
     }
     
-    # 렉 방지 핵심: 최대 1번만 시도하고, 5초 안에 답이 없으면 바로 끊어버립니다.
-    try:
-        response = requests.get(url, params=params, headers=headers, timeout=5)
-        
-        if response.status_code == 200:
-            data = response.json()
-            states = data.get("states", [])
-            if states:
-                st.sidebar.success("🟢 실시간 API 연동 성공")
-            return states
-        elif response.status_code == 429:
-            st.sidebar.error("⚠️ API 호출 한도 초과. 잠시 후 새로고침 하세요.")
+    max_retries = 3
+    
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(url, params=params, headers=headers, timeout=20)
+            
+            if response.status_code == 200:
+                data = response.json()
+                states = data.get("states", [])
+                if states:
+                    st.sidebar.success("🟢 실시간 OpenSky API 연동 성공")
+                return states
+            elif response.status_code == 429:
+                st.sidebar.error("⚠️ API 호출 한도를 초과했습니다. 잠시 후 다시 시도해주세요.")
+                return []
+                
+        except requests.exceptions.Timeout:
+            if attempt < max_retries - 1:
+                st.sidebar.warning(f"서버 응답 지연 (시도 {attempt + 1}/{max_retries})... 2초 후 재연결합니다.")
+                time.sleep(2)
+            else:
+                st.sidebar.error("❌ 연결 시간 초과: OpenSky 서버가 혼잡합니다. 잠시 후 새로고침을 눌러주세요.")
+                return []
+        except Exception as e:
+            st.sidebar.error(f"❌ 데이터 통신 오류 발생: {e}")
             return []
             
-    except requests.exceptions.Timeout:
-        # 지연 시 기다리지 않고 즉각적으로 에러 처리
-        st.sidebar.error("❌ 서버 응답 지연: 데이터를 빠르게 불러오지 못했습니다.")
-        return []
-    except Exception as e:
-        st.sidebar.error(f"❌ 데이터 통신 오류 발생: {e}")
-        return []
-        
     return []
+
+raw_data = get_flight_data()
+
 # -----------------------------------------------------------
 # 4. 데이터 전처리 및 이상 탐지
 # -----------------------------------------------------------

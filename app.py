@@ -4,6 +4,7 @@ import requests
 import pydeck as pdk
 import numpy as np
 import time
+import random
 
 # -----------------------------------------------------------
 # 1. 페이지 기본 설정
@@ -11,7 +12,7 @@ import time
 st.set_page_config(page_title="한반도 실시간 비행기 추적", layout="wide")
 
 st.title("✈️ 한반도 상공 실시간 비행기 이상 탐지 웹앱")
-st.write("OpenSky API 데이터에 Z-score 통계 기법을 적용하여 급강하 중인 비행기를 자동으로 감지합니다.")
+st.write("OpenSky API 데이터(또는 가상 데이터)에 Z-score 통계 기법을 적용하여 급강하 중인 비행기를 자동으로 감지합니다.")
 
 # -----------------------------------------------------------
 # 2. 사이드바 UI 설정
@@ -33,50 +34,59 @@ z_threshold = st.sidebar.slider(
 )
 
 # -----------------------------------------------------------
-# 3. 데이터 수집 (가상 데이터 제거, 실제 API 재시도 로직만 적용)
+# 3. 가상 데이터 생성기 (API 차단 시 무조건 화면을 띄우기 위한 장치)
+# -----------------------------------------------------------
+def get_mock_data():
+    mock_states = []
+    for i in range(40):
+        callsign = f"KAL{random.randint(100, 999)}"
+        lon = random.uniform(125.0, 131.0)
+        lat = random.uniform(34.0, 38.0)
+        alt = random.uniform(3000, 10000)
+        vel = random.uniform(200, 250)
+        
+        if random.random() > 0.9:
+            vr = random.uniform(-25.0, -15.0)  # 위험
+        else:
+            vr = random.uniform(-5.0, 5.0)     # 정상
+            
+        row = [
+            "mock", callsign, "South Korea", 0, 0,
+            lon, lat, alt, False, vel,
+            0, vr, None, alt, "0000", False, 0
+        ]
+        mock_states.append(row)
+    return mock_states
+
+# -----------------------------------------------------------
+# 4. 데이터 수집
 # -----------------------------------------------------------
 @st.cache_data(ttl=30, show_spinner="데이터를 수신 중입니다...")
 def get_flight_data():
     url = "https://opensky-network.org/api/states/all"
     params = {"lamin": 33.0, "lamax": 39.0, "lomin": 124.0, "lomax": 132.0}
-    # 웹 브라우저로 위장하여 차단 확률 낮추기
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'
     }
     
-    max_retries = 3
-    
-    for attempt in range(max_retries):
-        try:
-            response = requests.get(url, params=params, headers=headers, timeout=20)
-            
-            if response.status_code == 200:
-                data = response.json()
-                states = data.get("states", [])
-                if states:
-                    st.sidebar.success("🟢 실시간 OpenSky API 연동 성공")
+    try:
+        response = requests.get(url, params=params, headers=headers, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            states = data.get("states", [])
+            if states:
+                st.sidebar.success("🟢 실제 OpenSky API 연동 성공")
                 return states
-            elif response.status_code == 429:
-                st.sidebar.error("⚠️ API 호출 한도를 초과했습니다. 잠시 후 다시 시도해주세요.")
-                return []
-                
-        except requests.exceptions.Timeout:
-            if attempt < max_retries - 1:
-                st.sidebar.warning(f"서버 응답 지연 (시도 {attempt + 1}/{max_retries})... 2초 후 재연결합니다.")
-                time.sleep(2)
-            else:
-                st.sidebar.error("❌ 연결 시간 초과: OpenSky 서버가 혼잡합니다. 잠시 후 새로고침을 눌러주세요.")
-                return []
-        except Exception as e:
-            st.sidebar.error(f"❌ 데이터 통신 오류 발생: {e}")
-            return []
-            
-    return []
+    except:
+        pass
+
+    st.sidebar.warning("🟡 API 서버 혼잡으로 가상(Mock) 데이터를 표시합니다.")
+    return get_mock_data()
 
 raw_data = get_flight_data()
 
 # -----------------------------------------------------------
-# 4. 데이터 전처리 및 이상 탐지
+# 5. 데이터 전처리 및 이상 탐지
 # -----------------------------------------------------------
 if raw_data and len(raw_data) > 0:
     columns = [
@@ -90,7 +100,6 @@ if raw_data and len(raw_data) > 0:
     df = df.dropna(subset=['longitude', 'latitude', 'vertical_rate'])
     df['callsign'] = df['callsign'].astype(str).str.strip().replace('', '알 수 없음')
 
-    # Z-score 계산
     mean_vr = df['vertical_rate'].mean()
     std_vr = df['vertical_rate'].std()
     
@@ -99,7 +108,6 @@ if raw_data and len(raw_data) > 0:
     else:
         df['z_score'] = 0.0
 
-    # 위험(급강하) 판정 로직
     df['status'] = np.where(
         (df['z_score'] <= z_threshold) & (df['vertical_rate'] < -10.0), 
         '위험(급강하)', 
@@ -112,7 +120,7 @@ if raw_data and len(raw_data) > 0:
     df['color'] = df['status'].apply(assign_color)
 
     # -----------------------------------------------------------
-    # 5. 현황판 및 3D 지도 시각화
+    # 6. 현황판 및 3D 지도 시각화
     # -----------------------------------------------------------
     diving_count = len(df[df['status'] == '위험(급강하)'])
     
@@ -146,7 +154,7 @@ if raw_data and len(raw_data) > 0:
     st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip, map_style="dark"))
     
     # -----------------------------------------------------------
-    # 6. 데이터 테이블
+    # 7. 데이터 테이블 (에러 원인 완벽 제거)
     # -----------------------------------------------------------
     st.markdown("---")
     st.subheader("📊 실시간 항공 통계 데이터")
@@ -159,6 +167,8 @@ if raw_data and len(raw_data) > 0:
         
     formatted_df = df[['callsign', 'status', 'z_score', 'vertical_rate', 'baro_altitude', 'velocity']].copy()
     
+    # 에러를 일으키던 applymap/map 색상 칠하기 코드를 완전히 삭제했습니다.
+    # 숫자 소수점 포맷팅만 깔끔하게 적용합니다.
     st.dataframe(
         formatted_df.style.format({
             'z_score': '{:.2f}', 
@@ -168,8 +178,3 @@ if raw_data and len(raw_data) > 0:
         }),
         use_container_width=True
     )
-
-else:
-    # 데이터 수신 실패 또는 빈 데이터일 경우 처리
-    st.warning("현재 한반도 상공에서 감지된 비행기 데이터가 없거나 서버 혼잡으로 데이터를 가져오지 못했습니다.")
-    st.info("왼쪽 사이드바의 **[🔄 데이터 새로고침]** 버튼을 다시 눌러주세요.")

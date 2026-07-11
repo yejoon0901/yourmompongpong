@@ -38,20 +38,18 @@ z_threshold = st.sidebar.slider(
 # -----------------------------------------------------------
 def get_mock_data():
     mock_states = []
-    for i in range(40):  # 40대의 가상 비행기 생성
+    for i in range(40):
         callsign = f"KAL{random.randint(100, 999)}"
         lon = random.uniform(125.0, 131.0)
         lat = random.uniform(34.0, 38.0)
         alt = random.uniform(3000, 10000)
         vel = random.uniform(200, 250)
         
-        # 10% 확률로 급강하하는 비행기 생성, 나머지는 정상 비행
         if random.random() > 0.9:
-            vr = random.uniform(-25.0, -15.0)  # 위험(급강하)
+            vr = random.uniform(-25.0, -15.0)  # 위험
         else:
             vr = random.uniform(-5.0, 5.0)     # 정상
             
-        # OpenSky API와 동일한 17개 컬럼 구조
         row = [
             "mock", callsign, "South Korea", 0, 0,
             lon, lat, alt, False, vel,
@@ -61,7 +59,7 @@ def get_mock_data():
     return mock_states
 
 # -----------------------------------------------------------
-# 4. 데이터 수집 (실제 API 시도 -> 실패 시 가상 데이터로 우회)
+# 4. 데이터 수집
 # -----------------------------------------------------------
 @st.cache_data(ttl=30, show_spinner="데이터를 수신 중입니다...")
 def get_flight_data():
@@ -72,9 +70,7 @@ def get_flight_data():
     }
     
     try:
-        # 실제 API 호출 시도 (5초만 기다림)
         response = requests.get(url, params=params, headers=headers, timeout=5)
-        
         if response.status_code == 200:
             data = response.json()
             states = data.get("states", [])
@@ -82,9 +78,8 @@ def get_flight_data():
                 st.sidebar.success("🟢 실제 OpenSky API 연동 성공")
                 return states
     except:
-        pass # 에러가 나면 아래 가상 데이터 생성 로직으로 넘어감
+        pass
 
-    # API 호출 실패, 타임아웃, 또는 빈 데이터일 경우 무조건 가상 데이터 반환
     st.sidebar.warning("🟡 API 서버 혼잡으로 가상(Mock) 데이터를 표시합니다.")
     return get_mock_data()
 
@@ -105,7 +100,6 @@ if raw_data and len(raw_data) > 0:
     df = df.dropna(subset=['longitude', 'latitude', 'vertical_rate'])
     df['callsign'] = df['callsign'].astype(str).str.strip().replace('', '알 수 없음')
 
-    # Z-score 계산
     mean_vr = df['vertical_rate'].mean()
     std_vr = df['vertical_rate'].std()
     
@@ -114,7 +108,6 @@ if raw_data and len(raw_data) > 0:
     else:
         df['z_score'] = 0.0
 
-    # 위험 판정 (Z-score 충족 & 수직 속도 -10m/s 이하)
     df['status'] = np.where(
         (df['z_score'] <= z_threshold) & (df['vertical_rate'] < -10.0), 
         '위험(급강하)', 
@@ -161,7 +154,7 @@ if raw_data and len(raw_data) > 0:
     st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip, map_style="dark"))
     
     # -----------------------------------------------------------
-    # 7. 데이터 테이블
+    # 7. 데이터 테이블 (에러 원인 완벽 제거)
     # -----------------------------------------------------------
     st.markdown("---")
     st.subheader("📊 실시간 항공 통계 데이터")
@@ -174,12 +167,14 @@ if raw_data and len(raw_data) > 0:
         
     formatted_df = df[['callsign', 'status', 'z_score', 'vertical_rate', 'baro_altitude', 'velocity']].copy()
     
+    # 에러를 일으키던 applymap/map 색상 칠하기 코드를 완전히 삭제했습니다.
+    # 숫자 소수점 포맷팅만 깔끔하게 적용합니다.
     st.dataframe(
         formatted_df.style.format({
             'z_score': '{:.2f}', 
             'vertical_rate': '{:.2f}',
             'baro_altitude': '{:.0f}',
             'velocity': '{:.1f}'
-        }).applymap(lambda x: "background-color: #ffcccc; color: red;" if x == "위험(급강하)" else "", subset=['status']),
+        }),
         use_container_width=True
     )
